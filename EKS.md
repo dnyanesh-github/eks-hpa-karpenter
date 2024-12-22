@@ -15,13 +15,14 @@
 <p>“First things first, download and install the AWS CLI. Think of it as your universal remote for the AWS world. Without it, you’re like a wizard without a wand—tragic and completely useless. Head to <a href="https://aws.amazon.com/cli/">AWS CLI installation guide</a> and follow the instructions. WAIT!</p>
 <p>You know what, I read your mind. You don’t want to browse away and get that feeling what I always got when something isn’t thorough.</p>
 <p>Let me provide the instructions here(Only for my dear Linux users though 😊).</p>
- 
-<h5>Install awsclia</h5>
+<h5>Install AWS CLI</h5>
 <div>
     <pre id="content">curl "https://awscli.amazonaws.com/awscli-exe-linux-x86_64.zip" -o "awscliv2.zip"
 unzip awscliv2.zip
 sudo ./aws/install
     </pre>
+    
+        Copy
     
 </div>
 
