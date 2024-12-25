@@ -56,20 +56,70 @@ Prometheus collects application and cluster metrics, while Grafana visualizes th
    helm install prometheus prometheus-community/kube-prometheus-stack -n monitoring
    ```
 
-3. Access Grafana:
+---
+
+## Step 3: Expose Grafana for Remote Access
+
+### Why?
+The Grafana service must be exposed to be accessed from outside the cluster.
+
+### How?
+
+#### Option 1: Expose Using a LoadBalancer
+1. Edit the Grafana service to use a LoadBalancer type:
    ```bash
-   # Retrieve the Grafana admin password:
-   kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode
-
-   # Forward the Grafana port to access it locally:
-   kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80
-
-   # Open Grafana at http://localhost:3000
+   kubectl edit service prometheus-grafana -n monitoring
    ```
+
+   Update the `spec.type` to `LoadBalancer`:
+   ```yaml
+   spec:
+     type: LoadBalancer
+   ```
+
+2. Retrieve the LoadBalancer's external IP:
+   ```bash
+   kubectl get svc prometheus-grafana -n monitoring
+   ```
+
+3. Access Grafana at `http://<EXTERNAL-IP>`.
+
+#### Option 2: Expose Using an Ingress
+1. Deploy an Ingress resource:
+   ```yaml
+   apiVersion: networking.k8s.io/v1
+   kind: Ingress
+   metadata:
+     name: grafana-ingress
+     namespace: monitoring
+     annotations:
+       nginx.ingress.kubernetes.io/rewrite-target: /
+   spec:
+     rules:
+     - host: grafana.example.com
+       http:
+         paths:
+         - path: /
+           pathType: Prefix
+           backend:
+             service:
+               name: prometheus-grafana
+               port:
+                 number: 80
+   ```
+
+2. Apply the Ingress resource:
+   ```bash
+   kubectl apply -f grafana-ingress.yaml
+   ```
+
+3. Point your domain (`grafana.example.com`) to the Ingress controller's IP.
+
+4. Access Grafana at `http://grafana.example.com`.
 
 ---
 
-## Step 3: Install ADOT Collector for Prometheus
+## Step 4: Install ADOT Collector for Prometheus
 
 ### Why?
 AWS Distro for OpenTelemetry (ADOT) integrates with Prometheus to collect metrics and forward them to Prometheus.
@@ -112,7 +162,7 @@ AWS Distro for OpenTelemetry (ADOT) integrates with Prometheus to collect metric
 
 ---
 
-## Step 4: Deploy the Sample Application
+## Step 5: Deploy the Sample Application
 
 ### Why?
 The sample application emits metrics to test the integration between Prometheus, ADOT, and Grafana.
@@ -150,7 +200,7 @@ kubectl apply -f sample-app.yaml
 
 ---
 
-## Step 5: Configure Horizontal Pod Autoscaler (HPA)
+## Step 6: Configure Horizontal Pod Autoscaler (HPA)
 
 ### Why?
 HPA ensures the application scales automatically based on resource usage, such as CPU or memory.
@@ -182,7 +232,7 @@ kubectl apply -f sample-app-hpa.yaml
 
 ---
 
-## Step 6: Configure Karpenter
+## Step 7: Configure Karpenter
 
 ### Why?
 Karpenter dynamically provisions nodes to ensure sufficient capacity for pods scaled by HPA.
@@ -206,7 +256,7 @@ kubectl apply -f karpenter-provisioner.yaml
 
 ---
 
-## Step 7: Generate Load
+## Step 8: Generate Load
 
 ### Why?
 Generating load tests the scaling capabilities of HPA and Karpenter under real-world-like conditions.
@@ -237,24 +287,23 @@ kubectl apply -f load-generator.yaml
 
 ---
 
-## Step 8: View Metrics in Grafana
+## Step 9: View Metrics in Grafana
 
 ### Why?
 Grafana provides a real-time visualization of metrics collected by Prometheus.
 
 ### How?
-1. Access Grafana at http://localhost:3000.
-2. Log in using the admin password retrieved earlier.
-3. Add Prometheus as a data source:
+1. Access Grafana using either the LoadBalancer IP or Ingress domain.
+2. Add Prometheus as a data source:
    - Navigate to Configuration > Data Sources.
    - Add a new data source with the following details:
      - URL: `http://prometheus-server.monitoring.svc.cluster.local:9090`
      - Access: Server (Default).
-4. Import a Kubernetes dashboard (e.g., ID 315) for visualizing cluster metrics.
+3. Import a Kubernetes dashboard (e.g., ID 315) for visualizing cluster metrics.
 
 ---
 
-## Step 9: Clean Up Resources
+## Step 10: Clean Up Resources
 
 ### Why?
 Cleaning up resources prevents unnecessary costs and ensures a clean cluster state.
