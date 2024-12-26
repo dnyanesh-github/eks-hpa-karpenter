@@ -1,7 +1,7 @@
 
 # EKS Cluster with HPA, Karpenter, Prometheus, and Grafana
 
-This guide provides step-by-step instructions to set up an Amazon EKS cluster integrated with Horizontal Pod Autoscaler (HPA), Karpenter for dynamic node provisioning, Prometheus for metrics collection, and Grafana for visualization.
+This guide provides step-by-step instructions to set up an Amazon EKS cluster integrated with Horizontal Pod Autoscaler (HPA), Karpenter for dynamic node provisioning, Prometheus for metrics collection, and Grafana for visualization. All external traffic is routed through an Ingress resource for centralized and efficient management.
 
 ---
 
@@ -16,13 +16,13 @@ Creating an EKS cluster using eksctl simplifies the process by automating resour
    apiVersion: eksctl.io/v1alpha5
    kind: ClusterConfig
    metadata:
-     name: UnifiCX
+     name: prometheus-cluster
      region: us-east-1
    nodeGroups:
      - name: worker-nodes
        instanceType: t3.medium
-       desiredCapacity: 2
-       maxSize: 5
+       desiredCapacity: 3
+       maxSize: 6
        minSize: 1
    ```
 
@@ -38,7 +38,33 @@ Creating an EKS cluster using eksctl simplifies the process by automating resour
 
 ---
 
-## Step 2: Install Prometheus and Grafana
+## Step 2: Deploy an Ingress Controller
+
+### Why?
+An Ingress Controller is required to manage HTTP and HTTPS traffic to your cluster.
+
+### How?
+1. Add the NGINX Ingress Controller Helm repository:
+   ```bash
+   helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+   helm repo update
+   ```
+
+2. Install the Ingress Controller:
+   ```bash
+   helm install ingress-nginx ingress-nginx/ingress-nginx      --namespace ingress-nginx --create-namespace
+   ```
+
+3. Verify the deployment:
+   ```bash
+   kubectl get pods -n ingress-nginx
+   kubectl get svc -n ingress-nginx
+   ```
+   - Note the external IP or DNS name of the LoadBalancer.
+
+---
+
+## Step 3: Deploy Prometheus and Grafana
 
 ### Why?
 Prometheus collects application and cluster metrics, while Grafana visualizes these metrics in customizable dashboards.
@@ -58,34 +84,34 @@ Prometheus collects application and cluster metrics, while Grafana visualizes th
 
 ---
 
-## Step 3: Expose Grafana for Remote Access
+## Step 4: Expose Grafana Using Ingress
 
 ### Why?
-The Grafana service must be exposed to be accessed from outside the cluster.
+Using an Ingress resource centralizes and simplifies routing external traffic to your services.
 
 ### How?
-
-#### Option 1: Expose Using a LoadBalancer
-1. Edit the Grafana service to use a LoadBalancer type:
-   ```bash
-   kubectl edit service prometheus-grafana -n monitoring
-   ```
-
-   Update the `spec.type` to `LoadBalancer`:
+1. Ensure the Grafana service is of type `ClusterIP`:
    ```yaml
+   apiVersion: v1
+   kind: Service
+   metadata:
+     name: prometheus-grafana
+     namespace: monitoring
    spec:
-     type: LoadBalancer
+     type: ClusterIP
+     ports:
+     - name: http
+       port: 80
+       targetPort: 3000
+     selector:
+       app.kubernetes.io/name: grafana
    ```
-
-2. Retrieve the LoadBalancer's external IP:
+   Apply the service:
    ```bash
-   kubectl get svc prometheus-grafana -n monitoring
+   kubectl apply -f grafana-service.yaml
    ```
 
-3. Access Grafana at `http://<EXTERNAL-IP>`.
-
-#### Option 2: Expose Using an Ingress
-1. Deploy an Ingress resource:
+2. Create an Ingress resource for Grafana:
    ```yaml
    apiVersion: networking.k8s.io/v1
    kind: Ingress
@@ -108,215 +134,80 @@ The Grafana service must be exposed to be accessed from outside the cluster.
                  number: 80
    ```
 
-2. Apply the Ingress resource:
+   Apply the Ingress resource:
    ```bash
    kubectl apply -f grafana-ingress.yaml
    ```
 
-3. Point your domain (`grafana.example.com`) to the Ingress controller's IP.
+3. Update DNS:
+   - Point your domain (`grafana.example.com`) to the external IP of the Ingress Controller LoadBalancer.
 
-4. Access Grafana at `http://grafana.example.com`.
+4. Verify Access:
+   - Open `http://grafana.example.com` in your browser.
 
 ---
 
-## Step 4: Install ADOT Collector for Prometheus
+## Step 5: Enable HTTPS for Grafana
 
 ### Why?
-AWS Distro for OpenTelemetry (ADOT) integrates with Prometheus to collect metrics and forward them to Prometheus.
+Using HTTPS secures communication between your browser and Grafana.
 
 ### How?
-1. Deploy the ADOT Collector ConfigMap:
+1. Install **Cert-Manager**:
+   ```bash
+   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.yaml
+   ```
+
+2. Create a ClusterIssuer for Let’s Encrypt:
    ```yaml
-   apiVersion: v1
-   kind: ConfigMap
+   apiVersion: cert-manager.io/v1
+   kind: ClusterIssuer
    metadata:
-     name: adot-collector-config
-     namespace: adot
-   data:
-     collector-config.yaml: |
-       receivers:
-         otlp:
-           protocols:
-             grpc:
-             http:
-       exporters:
-         prometheus:
-           endpoint: "0.0.0.0:9090"
-       service:
-         pipelines:
-           metrics:
-             receivers: [otlp]
-             exporters: [prometheus]
+     name: letsencrypt
+   spec:
+     acme:
+       server: https://acme-v02.api.letsencrypt.org/directory
+       email: your-email@example.com
+       privateKeySecretRef:
+         name: letsencrypt-private-key
+       solvers:
+       - http01:
+           ingress:
+             class: nginx
    ```
+
+   Apply the ClusterIssuer:
    ```bash
-   kubectl apply -f adot-collector-config.yaml
+   kubectl apply -f cluster-issuer.yaml
    ```
 
-2. Install the ADOT Collector:
+3. Update the Ingress resource for TLS:
+   Add a TLS section to the Ingress resource:
+   ```yaml
+   spec:
+     tls:
+     - hosts:
+       - grafana.example.com
+       secretName: grafana-tls
+   ```
+
+   Apply the updated Ingress:
    ```bash
-   helm repo add adot https://aws-observability.github.io/aws-otel-helm-charts
-   helm repo update
-   kubectl create namespace adot
-   helm install adot-collector adot/aws-otel-collector -n adot --set configMap=adot-collector-config
+   kubectl apply -f grafana-ingress.yaml
    ```
 
----
-
-## Step 5: Deploy the Sample Application
-
-### Why?
-The sample application emits metrics to test the integration between Prometheus, ADOT, and Grafana.
-
-### How?
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: sample-app
-  labels:
-    app: sample-app
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: sample-app
-  template:
-    metadata:
-      labels:
-        app: sample-app
-    spec:
-      containers:
-      - name: sample-app
-        image: ghcr.io/open-telemetry/opentelemetry-demo:latest
-        env:
-        - name: OTEL_EXPORTER_OTLP_ENDPOINT
-          value: "http://adot-collector.adot:4317"
-        ports:
-        - containerPort: 8080
-```
-```bash
-kubectl apply -f sample-app.yaml
-```
+4. Verify HTTPS:
+   - Access Grafana at `https://grafana.example.com`.
 
 ---
 
-## Step 6: Configure Horizontal Pod Autoscaler (HPA)
+## Step 6: Configure the Rest of the Cluster
 
-### Why?
-HPA ensures the application scales automatically based on resource usage, such as CPU or memory.
-
-### How?
-```yaml
-apiVersion: autoscaling/v2
-kind: HorizontalPodAutoscaler
-metadata:
-  name: sample-app-hpa
-spec:
-  scaleTargetRef:
-    apiVersion: apps/v1
-    kind: Deployment
-    name: sample-app
-  minReplicas: 1
-  maxReplicas: 10
-  metrics:
-  - type: Resource
-    resource:
-      name: cpu
-      target:
-        type: Utilization
-        averageUtilization: 50
-```
-```bash
-kubectl apply -f sample-app-hpa.yaml
-```
+- **Deploy ADOT Collector**: Follow Step 4 from the original guide.
+- **Deploy the Sample Application**: Follow Step 5 from the original guide.
+- **Configure HPA and Karpenter**: Follow Steps 6 and 7 from the original guide.
 
 ---
 
-## Step 7: Configure Karpenter
+Let me know if you’d like to adjust this further or need a downloadable version!
 
-### Why?
-Karpenter dynamically provisions nodes to ensure sufficient capacity for pods scaled by HPA.
-
-### How?
-```yaml
-apiVersion: karpenter.sh/v1alpha5
-kind: Provisioner
-metadata:
-  name: adot-provisioner
-spec:
-  provider:
-    instanceTypes:
-      - "t3.medium"
-      - "m5.large"
-  ttlSecondsAfterEmpty: 30
-```
-```bash
-kubectl apply -f karpenter-provisioner.yaml
-```
-
----
-
-## Step 8: Generate Load
-
-### Why?
-Generating load tests the scaling capabilities of HPA and Karpenter under real-world-like conditions.
-
-### How?
-```yaml
-apiVersion: batch/v1
-kind: Job
-metadata:
-  name: load-generator
-spec:
-  template:
-    spec:
-      containers:
-      - name: load-generator
-        image: busybox
-        command:
-        - /bin/sh
-        - -c
-        - |
-          while true; do wget -q -O- http://sample-app; done
-      restartPolicy: Never
-  backoffLimit: 4
-```
-```bash
-kubectl apply -f load-generator.yaml
-```
-
----
-
-## Step 9: View Metrics in Grafana
-
-### Why?
-Grafana provides a real-time visualization of metrics collected by Prometheus.
-
-### How?
-1. Access Grafana using either the LoadBalancer IP or Ingress domain.
-2. Add Prometheus as a data source:
-   - Navigate to Configuration > Data Sources.
-   - Add a new data source with the following details:
-     - URL: `http://prometheus-server.monitoring.svc.cluster.local:9090`
-     - Access: Server (Default).
-3. Import a Kubernetes dashboard (e.g., ID 315) for visualizing cluster metrics.
-
----
-
-## Step 10: Clean Up Resources
-
-### Why?
-Cleaning up resources prevents unnecessary costs and ensures a clean cluster state.
-
-### How?
-```bash
-kubectl delete -f load-generator.yaml
-kubectl delete -f sample-app-hpa.yaml
-kubectl delete -f sample-app.yaml
-kubectl delete -f karpenter-provisioner.yaml
-helm uninstall adot-collector -n adot
-helm uninstall prometheus -n monitoring
-kubectl delete namespace adot
-kubectl delete namespace monitoring
-eksctl delete cluster --name=prometheus-cluster
-```

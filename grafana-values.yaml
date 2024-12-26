@@ -1,0 +1,14 @@
+service:
+  type: LoadBalancer  # Use LoadBalancer for public access
+  port: 80
+
+ingress:
+  enabled: true  # Enable Ingress if preferred
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /
+  hosts:
+    - host: grafana.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
