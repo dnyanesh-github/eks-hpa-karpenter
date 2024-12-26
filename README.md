@@ -16,13 +16,22 @@ Creating an EKS cluster using eksctl simplifies the process by automating resour
    apiVersion: eksctl.io/v1alpha5
    kind: ClusterConfig
    metadata:
-     name: prometheus-cluster
+     name: UnifiCX
      region: us-east-1
+   vpc:
+     subnets:
+       private:
+         us-east-1a:
+           id: subnet-0abcdef1234567890
+         us-east-1b:
+           id: subnet-0abcdef1234567891
+         us-east-1c:
+           id: subnet-0abcdef1234567892
    nodeGroups:
      - name: worker-nodes
        instanceType: t3.medium
        desiredCapacity: 2
-       maxSize: 4
+       maxSize: 5
        minSize: 1
    ```
 
