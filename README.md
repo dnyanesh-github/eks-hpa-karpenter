@@ -1,4 +1,3 @@
-
 # EKS Cluster with HPA, Karpenter, Prometheus, and Grafana
 
 This guide provides step-by-step instructions to set up an Amazon EKS cluster integrated with Horizontal Pod Autoscaler (HPA), Karpenter for dynamic node provisioning, Prometheus for metrics collection, and Grafana for visualization. All external traffic is routed through an Ingress resource for centralized and efficient management.
@@ -52,7 +51,7 @@ An Ingress Controller is required to manage HTTP and HTTPS traffic to your clust
 
 2. Install the Ingress Controller:
    ```bash
-   helm install ingress-nginx ingress-nginx/ingress-nginx      --namespace ingress-nginx --create-namespace
+   helm install ingress-nginx ingress-nginx/ingress-nginx --namespace ingress-nginx --create-namespace
    ```
 
 3. Verify the deployment:
@@ -60,7 +59,7 @@ An Ingress Controller is required to manage HTTP and HTTPS traffic to your clust
    kubectl get pods -n ingress-nginx
    kubectl get svc -n ingress-nginx
    ```
-   - Note the external IP or DNS name of the LoadBalancer.
+   - Note the external IP of the LoadBalancer.
 
 ---
 
@@ -122,8 +121,7 @@ Using an Ingress resource centralizes and simplifies routing external traffic to
        nginx.ingress.kubernetes.io/rewrite-target: /
    spec:
      rules:
-     - host: grafana.example.com
-       http:
+     - http:
          paths:
          - path: /
            pathType: Prefix
@@ -139,75 +137,150 @@ Using an Ingress resource centralizes and simplifies routing external traffic to
    kubectl apply -f grafana-ingress.yaml
    ```
 
-3. Update DNS:
-   - Point your domain (`grafana.example.com`) to the external IP of the Ingress Controller LoadBalancer.
-
-4. Verify Access:
-   - Open `http://grafana.example.com` in your browser.
+3. Verify Access:
+   - Use the external IP of the LoadBalancer for the Ingress Controller to access Grafana. For example, open `http://<EXTERNAL-IP>` in your browser.
 
 ---
 
-## Step 5: Enable HTTPS for Grafana
+## Step 5: Configure the Rest of the Cluster
 
-### Why?
-Using HTTPS secures communication between your browser and Grafana.
+### 5.1 Deploy ADOT Collector
 
-### How?
-1. Install **Cert-Manager**:
+The AWS Distro for OpenTelemetry (ADOT) Collector gathers and exports metrics, logs, and traces from your cluster for observability.
+
+1. Install ADOT Collector:
    ```bash
-   kubectl apply -f https://github.com/cert-manager/cert-manager/releases/download/v1.11.0/cert-manager.yaml
+   helm repo add adot https://aws-observability.github.io/aws-otel-helm-charts
+   helm repo update
+   helm install adot adot/adot-collector -n monitoring
    ```
 
-2. Create a ClusterIssuer for Let’s Encrypt:
+2. Verify the installation:
+   ```bash
+   kubectl get pods -n monitoring
+   ```
+
+3. Configure ADOT for Prometheus scraping and AWS X-Ray tracing by editing the `adot-collector-config.yaml`.
+
+---
+
+### 5.2 Deploy a Sample Application
+
+Deploy a simple application to validate monitoring and scaling functionality.
+
+1. Create a Kubernetes Deployment:
    ```yaml
-   apiVersion: cert-manager.io/v1
-   kind: ClusterIssuer
+   apiVersion: apps/v1
+   kind: Deployment
    metadata:
-     name: letsencrypt
+     name: sample-app
+     namespace: default
    spec:
-     acme:
-       server: https://acme-v02.api.letsencrypt.org/directory
-       email: your-email@example.com
-       privateKeySecretRef:
-         name: letsencrypt-private-key
-       solvers:
-       - http01:
-           ingress:
-             class: nginx
+       replicas: 3
+       selector:
+           matchLabels:
+               app: sample
+       template:
+           metadata:
+               labels:
+                   app: sample
+           spec:
+               containers:
+               - name: sample-app
+                 image: hashicorp/http-echo:latest
+                 args:
+                 - "-text=Hello, World!"
+                 ports:
+                 - containerPort: 5678
    ```
 
-   Apply the ClusterIssuer:
+   Apply the Deployment:
    ```bash
-   kubectl apply -f cluster-issuer.yaml
+   kubectl apply -f sample-app.yaml
    ```
 
-3. Update the Ingress resource for TLS:
-   Add a TLS section to the Ingress resource:
+2. Expose the application:
+   ```bash
+   kubectl expose deployment sample-app --type=ClusterIP --port=80 --target-port=5678
+   ```
+
+---
+
+### 5.3 Configure HPA and Karpenter
+
+#### HPA
+1. Enable the metrics server if not already installed:
+   ```bash
+   kubectl apply -f https://github.com/kubernetes-sigs/metrics-server/releases/latest/download/components.yaml
+   ```
+
+2. Apply HPA to the sample app:
    ```yaml
+   apiVersion: autoscaling/v2
+   kind: HorizontalPodAutoscaler
+   metadata:
+     name: sample-app-hpa
+     namespace: default
    spec:
-     tls:
-     - hosts:
-       - grafana.example.com
-       secretName: grafana-tls
+     scaleTargetRef:
+       apiVersion: apps/v1
+       kind: Deployment
+       name: sample-app
+     minReplicas: 1
+     maxReplicas: 5
+     metrics:
+     - type: Resource
+       resource:
+         name: cpu
+         target:
+           type: Utilization
+           averageUtilization: 50
    ```
 
-   Apply the updated Ingress:
+   Apply the HPA configuration:
    ```bash
-   kubectl apply -f grafana-ingress.yaml
+   kubectl apply -f sample-app-hpa.yaml
    ```
 
-4. Verify HTTPS:
-   - Access Grafana at `https://grafana.example.com`.
+#### Karpenter
+1. Install Karpenter:
+   ```bash
+   helm repo add karpenter https://charts.karpenter.sh
+   helm repo update
+   helm install karpenter karpenter/karpenter --namespace karpenter --create-namespace
+   ```
+
+2. Apply required permissions for Karpenter to manage nodes:
+   ```bash
+   eksctl create iamserviceaccount        --name karpenter        --namespace karpenter        --cluster prometheus-cluster        --attach-policy-arn arn:aws:iam::aws:policy/AmazonEKSWorkerNodePolicy        --attach-policy-arn arn:aws:iam::aws:policy/AmazonEC2ContainerRegistryReadOnly        --attach-policy-arn arn:aws:iam::aws:policy/AmazonEKSClusterPolicy        --approve
+   ```
+
+3. Create a `Provisioner` resource to define scaling rules:
+   ```yaml
+   apiVersion: karpenter.sh/v1alpha5
+   kind: Provisioner
+   metadata:
+     name: default
+   spec:
+     requirements:
+       - key: "karpenter.k8s.aws/instance-category"
+         operator: In
+         values: ["t3", "m5"]
+     limits:
+       resources:
+         cpu: "1000"
+     provider:
+       subnetSelector:
+         karpenter.sh/discovery: "prometheus-cluster"
+       securityGroupSelector:
+         karpenter.sh/discovery: "prometheus-cluster"
+   ```
+
+   Apply the `Provisioner`:
+   ```bash
+   kubectl apply -f karpenter-provisioner.yaml
+   ```
 
 ---
 
-## Step 6: Configure the Rest of the Cluster
-
-- **Deploy ADOT Collector**: Follow Step 4 from the original guide.
-- **Deploy the Sample Application**: Follow Step 5 from the original guide.
-- **Configure HPA and Karpenter**: Follow Steps 6 and 7 from the original guide.
-
----
-
-Let me know if you’d like to adjust this further or need a downloadable version!
-
+Let me know if further adjustments are needed!
